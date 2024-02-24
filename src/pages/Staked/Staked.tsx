@@ -7,6 +7,7 @@ import axios from 'axios'
 interface ProgressStateType {
   curNum: number
   maxNum: number
+  unit: string
 }
 
 const useProgress = (initial: ProgressStateType) =>
@@ -141,53 +142,105 @@ async function get_nc_waxdao_farms() {
 const get_owned = async (
   templates_map: Map<string | undefined, number>,
   accounts_to_exclude: Set<string>,
-  templates_count: Map<string, Map<string, number>>
-  //setProgress: SetProgressType,
+  templates_count: Map<string, Map<string, number>>,
+  setProgress: SetProgressType
   //setResultList: (arg0: string) => void
 ) => {
   // load transfers from atomic
-  let page = 1
-  let more = true
 
-  while (more === true) {
-    const url =
-      'https://wax.api.atomicassets.io/atomicassets/v1/assets?template_id=' +
-      Array.from(templates_map.keys()).join(',') +
-      '&burned=false&page=' +
-      page +
-      '&limit=100&order=desc&sort=asset_id'
-    const response = await axios.get(url)
-    const data = response.data
+  // we need to query data in chunks of max <template_chunk_length> query_ids from atomic
+  const template_chunk_length = 5
+  let map_chunk_counter = 0
+  let map_counter = 0
 
-    if (data.data.length > 0) {
-      page += 1
-      for (const asset of data.data) {
-        // save account
-        const template_id = asset.template?.template_id
-        const owner = asset.owner
+  let template_ids_chunk: (string | undefined)[] = []
 
-        if (!accounts_to_exclude.has(owner)) {
-          // don't count if in excluded accounts
-          // (don't rely on atomicassets filter)
-          const increment = templates_map.get(template_id) ?? 0
-          if (!templates_count.has(template_id)) {
-            templates_count.set(template_id, new Map<string, number>())
+  for (const template_id of templates_map.keys()) {
+    if (
+      map_chunk_counter === template_chunk_length - 1 ||
+      map_counter === templates_map.size - 1
+    ) {
+      template_ids_chunk.push(template_id)
+      console.log('chunk:')
+      console.log(template_ids_chunk)
+
+      setProgress(() => ({
+        curNum: map_counter + 1,
+        maxNum: templates_map.size,
+        unit: 'Templates from all accounts'
+      }))
+
+      let insert_account_count = 0
+      let insert_asset_count = 0
+
+      // get chunk of max <template_chunk_length> template_ids from atomicassets
+      let page = 1
+      let more = true
+
+      while (more === true) {
+        const url =
+          'https://wax.api.atomicassets.io/atomicassets/v1/assets?template_id=' +
+          template_ids_chunk
+            .filter(function (x) {
+              return x !== undefined
+            })
+            .join(',') +
+          '&burned=false&page=' +
+          page +
+          '&limit=100&order=desc&sort=asset_id'
+        const response = await axios.get(url)
+        const data = response.data
+
+        if (data.data.length > 0) {
+          page += 1
+          for (const asset of data.data) {
+            // save account
+            const template_id = asset.template?.template_id
+            const owner = asset.owner
+
+            if (!accounts_to_exclude.has(owner)) {
+              // don't count if in excluded accounts
+              // (don't rely on atomicassets filter)
+              const increment = templates_map.get(template_id) ?? 0
+              if (!templates_count.has(template_id)) {
+                templates_count.set(template_id, new Map<string, number>())
+              }
+              if (!templates_count.get(template_id)?.has(owner)) {
+                templates_count.get(template_id)?.set(owner, increment)
+                insert_asset_count += 1
+              } else {
+                templates_count
+                  .get(template_id)
+                  ?.set(
+                    owner,
+                    (templates_count.get(template_id)?.get(owner) ?? 0) +
+                      increment
+                  )
+                insert_asset_count += 1
+                insert_account_count += 1
+              }
+            }
           }
-          if (!templates_count.get(template_id)?.has(owner)) {
-            templates_count.get(template_id)?.set(owner, increment)
-          } else {
-            templates_count
-              .get(template_id)
-              ?.set(
-                owner,
-                (templates_count.get(template_id)?.get(owner) ?? 0) + increment
-              )
-          }
+          //rows = [...rows, ...data.data];
+        } else {
+          more = false
         }
       }
-      //rows = [...rows, ...data.data];
+      console.log('insert_account_count:')
+      console.log(insert_account_count)
+      console.log('insert_asset_count:')
+      console.log(insert_asset_count)
+
+      // finish processing chunk
+      more = true
+      map_counter += 1
+      map_chunk_counter = 0
+      template_ids_chunk = []
     } else {
-      more = false
+      // only add next template to chunk
+      template_ids_chunk.push(template_id)
+      map_counter += 1
+      map_chunk_counter += 1
     }
   }
   //console.log('got atomicassets owner data for ' + assets.size + ' assets')
@@ -198,49 +251,108 @@ const get_owned = async (
 const get_transfers_to = async (
   to_account: string,
   accounts_to_exclude: Set<string>,
-  templates_map: Map<string | undefined, number>
+  templates_map: Map<string | undefined, number>,
+  setProgress: SetProgressType,
+  unit_name: string
 ) => {
   // load transfers from atomic
   const assets = new Map<string, string>()
   const accounts = new Set<string>()
-  let page = 1
-  let more = true
 
-  while (more === true) {
-    const url =
-      'https://wax.api.atomicassets.io/atomicassets/v1/transfers?recipient=' +
-      to_account +
-      '&template_id=' +
-      Array.from(templates_map.keys()).join(',') +
-      '&page=' +
-      page +
-      '&limit=100&order=desc&sort=created'
-    const response = await axios.get(url)
-    const data = response.data
+  // we need to query data in chunks of max <template_chunk_length> query_ids from atomic
+  const template_chunk_length = 5
+  let map_chunk_counter = 0
+  let map_counter = 0
 
-    if (data.data.length > 0) {
-      page += 1
-      for (const transfer of data.data) {
-        // save account
-        if (
-          !accounts.has(
-            transfer.sender_name ||
-              accounts_to_exclude.has(transfer.sender_name)
-          )
-        ) {
-          accounts.add(transfer.sender_name)
-        }
-        for (const asset of transfer.assets) {
-          if (!accounts_to_exclude.has(transfer.sender_name)) {
-            assets.set(asset.asset_id.toString(), asset.template.template_id)
+  let template_ids_chunk: (string | undefined)[] = []
+
+  for (const template_id of templates_map.keys()) {
+    if (
+      map_chunk_counter === template_chunk_length - 1 ||
+      map_counter === templates_map.size - 1
+    ) {
+      template_ids_chunk.push(template_id)
+      console.log('chunk:')
+      console.log(template_ids_chunk)
+
+      setProgress(() => ({
+        curNum: map_counter + 1,
+        maxNum: templates_map.size,
+        unit: 'Templates for ' + unit_name + ' from atomic API'
+      }))
+
+      let insert_account_count = 0
+      let insert_asset_count = 0
+
+      // get chunk of max <template_chunk_length> template_ids from atomicassets
+      let page = 1
+      let more = true
+
+      while (more === true) {
+        const url =
+          'https://wax.api.atomicassets.io/atomicassets/v1/transfers?recipient=' +
+          to_account +
+          '&template_id=' +
+          template_ids_chunk
+            .filter(function (x) {
+              return x !== undefined
+            })
+            .join(',') +
+          '&page=' +
+          page +
+          '&limit=100&order=desc&sort=created'
+        const response = await axios.get(url)
+        const data = response.data
+
+        console.log('data.data:')
+        console.log(data.data)
+
+        if (data.data.length > 0) {
+          page += 1
+          for (const transfer of data.data) {
+            // save account
+            if (
+              !accounts.has(
+                transfer.sender_name ||
+                  accounts_to_exclude.has(transfer.sender_name)
+              )
+            ) {
+              accounts.add(transfer.sender_name)
+              insert_account_count += 1
+            }
+            for (const asset of transfer.assets) {
+              if (!accounts_to_exclude.has(transfer.sender_name)) {
+                assets.set(
+                  asset.asset_id.toString(),
+                  asset.template.template_id
+                )
+                insert_asset_count += 1
+              }
+            }
           }
+          //rows = [...rows, ...data.data];
+        } else {
+          more = false
         }
       }
-      //rows = [...rows, ...data.data];
+      console.log('insert_account_count:')
+      console.log(insert_account_count)
+      console.log('insert_asset_count:')
+      console.log(insert_asset_count)
+
+      // finish processing chunk
+      more = true
+      map_counter += 1
+      map_chunk_counter = 0
+      template_ids_chunk = []
     } else {
-      more = false
+      // only add next template to chunk
+      template_ids_chunk.push(template_id)
+      map_counter += 1
+      map_chunk_counter += 1
     }
   }
+
   console.log('got atomicassets data for ' + assets.size + ' assets')
 
   return { assets: assets, accounts: accounts }
@@ -255,7 +367,8 @@ const get_staked_wombatmaster = async (
 ) => {
   setProgress((prevState: ProgressType) => ({
     curNum: prevState.curNum,
-    maxNum: accounts.size
+    maxNum: accounts.size,
+    unit: 'Dungeon Master accounts'
   }))
 
   // load staked assets from wax tables
@@ -263,7 +376,8 @@ const get_staked_wombatmaster = async (
   for (const wax_account of accounts) {
     setProgress((prevState: ProgressType) => ({
       maxNum: prevState.maxNum,
-      curNum: ac_count
+      curNum: ac_count,
+      unit: 'Dungeon Master accounts'
     }))
 
     ac_count += 1
@@ -318,7 +432,8 @@ const get_staked_waxdaofarmer = async (
 ) => {
   setProgress((prevState: ProgressType) => ({
     curNum: prevState.curNum,
-    maxNum: accounts.size
+    maxNum: accounts.size,
+    unit: 'WaxDAO accounts'
   }))
 
   // load staked assets from wax tables
@@ -326,7 +441,8 @@ const get_staked_waxdaofarmer = async (
   for (const wax_account of accounts) {
     setProgress((prevState: ProgressType) => ({
       maxNum: prevState.maxNum,
-      curNum: ac_count
+      curNum: ac_count,
+      unit: 'WaxDAO accounts'
     }))
 
     //console.log("wax_account:");
@@ -374,7 +490,11 @@ const get_staked_waxdaofarmer = async (
 }
 
 const Staked = () => {
-  const [progress, setProgress] = useProgress({ curNum: 0, maxNum: 0 })
+  const [progress, setProgress] = useProgress({
+    curNum: 0,
+    maxNum: 0,
+    unit: ''
+  })
   const [weightedAccountList, setWeightedAccountList] = useState('')
   const resultTextId = useId()
   const sourceTextId = useId()
@@ -414,8 +534,9 @@ const Staked = () => {
         await get_transfers_to(
           'wombatmaster',
           accounts_to_exclude,
-          templates_map
-          //setProgress
+          templates_map,
+          setProgress,
+          'Dungeon Master'
           //setWeightedAccountList
         )
 
@@ -445,7 +566,9 @@ const Staked = () => {
         await get_transfers_to(
           'waxdaofarmer',
           accounts_to_exclude,
-          templates_map
+          templates_map,
+          setProgress,
+          'WaxDAO'
           //setProgress
           //setWeightedAccountList
         )
@@ -469,7 +592,12 @@ const Staked = () => {
 
     if (data.sources_select?.includes('account')) {
       // assets in any account, except wombatmaster, waxadao and optional excluded
-      await get_owned(templates_map, accounts_to_exclude, templates_count)
+      await get_owned(
+        templates_map,
+        accounts_to_exclude,
+        templates_count,
+        setProgress
+      )
     }
 
     const weighted_account_list = getWeightedAccounts(templates_count)
@@ -480,7 +608,7 @@ const Staked = () => {
   }
 
   return (
-    <div className="flex h-screen items-center">
+    <div className="m-4 flex h-screen items-center">
       <div className="mx-auto space-y-4">
         <form className="space-y-2" onSubmit={handleSubmit(onSubmit)}>
           <div className="w-full space-x-2">
@@ -492,6 +620,7 @@ const Staked = () => {
                 name="sources_select"
                 value="wombatmaster"
                 type="checkbox"
+                className="mr-1"
               />
               wombatmaster
             </label>
@@ -504,6 +633,7 @@ const Staked = () => {
                 name="sources_select"
                 value="waxdaofarmer"
                 type="checkbox"
+                className="mr-1"
               />
               waxdaofarmer
             </label>
@@ -516,6 +646,7 @@ const Staked = () => {
                 name="sources_select"
                 value="account"
                 type="checkbox"
+                className="mr-1"
               />
               wax account
             </label>
@@ -541,24 +672,26 @@ const Staked = () => {
             )}
           </div>
 
-          <label
-            htmlFor={sourceTextId}
-            className="block text-sm font-medium leading-6 text-gray-900"
-          >
-            list of templates:
-          </label>
-          <textarea
-            id={sourceTextId}
-            defaultValue="template_id multiplikator"
-            {...register('templates', {
-              required: true,
-              validate: validateTemplates
-            })}
-            rows={6}
-            cols={50}
-            className="block rounded-md border-0 py-1.5 text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 placeholder:text-gray-400 focus:ring-2 focus:ring-inset focus:ring-indigo-600 sm:text-sm sm:leading-6"
-          />
-          {errors.templates && <div>{errors.templates.message}</div>}
+          <div>
+            <label
+              htmlFor={sourceTextId}
+              className="block text-sm font-medium leading-6 text-gray-900"
+            >
+              list of templates:
+            </label>
+            <textarea
+              id={sourceTextId}
+              defaultValue="template_id multiplikator"
+              {...register('templates', {
+                required: true,
+                validate: validateTemplates
+              })}
+              rows={6}
+              cols={50}
+              className="block rounded-md border-0 py-1.5 text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 placeholder:text-gray-400 focus:ring-2 focus:ring-inset focus:ring-indigo-600 sm:text-sm sm:leading-6"
+            />
+            {errors.templates && <div>{errors.templates.message}</div>}
+          </div>
 
           <button
             disabled={isSubmitting}
@@ -575,27 +708,29 @@ const Staked = () => {
         >
           {isSubmitting ? (
             <p className="text-sm">
-              Processing {progress.curNum} of {progress.maxNum + 1} Wax Accounts
+              Processing {progress.curNum} of {progress.maxNum} {progress.unit}
             </p>
           ) : (
             <p className="text-sm">&nbsp;</p>
           )}
         </div>
         <div className="mx-auto space-y-2">
-          <label
-            htmlFor={resultTextId}
-            className="block text-sm font-medium leading-6 text-gray-900"
-          >
-            weighted list of owners (
-            {(weightedAccountList?.split(/\r\n|\r|\n/).length ?? 0) - 1}):
-          </label>
-          <textarea
-            id={resultTextId}
-            value={weightedAccountList}
-            readOnly={true}
-            disabled
-            className="block w-full rounded-md border-0 py-1.5 text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 placeholder:text-gray-400 focus:ring-2 focus:ring-inset focus:ring-indigo-600 sm:text-sm sm:leading-6"
-          />
+          <div>
+            <label
+              htmlFor={resultTextId}
+              className="block text-sm font-medium leading-6 text-gray-900"
+            >
+              weighted list of owners (
+              {(weightedAccountList?.split(/\r\n|\r|\n/).length ?? 0) - 1}):
+            </label>
+            <textarea
+              id={resultTextId}
+              value={weightedAccountList}
+              readOnly={true}
+              disabled
+              className="block w-full rounded-md border-0 py-1.5 text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 placeholder:text-gray-400 focus:ring-2 focus:ring-inset focus:ring-indigo-600 sm:text-sm sm:leading-6"
+            />
+          </div>
           <button
             onClick={handleCopyClick}
             className="w-full rounded-md bg-white px-2.5 py-1.5 text-sm font-semibold text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 hover:bg-gray-50"
