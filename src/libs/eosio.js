@@ -6,8 +6,8 @@ export const fetchEosioTable = async ({
   table,
   limit,
   from,
-  upper = undefined,
-  key_type = undefined,
+  upper = '',
+  key_type = '',
   index_position = 1,
   chain = 'wax'
 }) => {
@@ -17,7 +17,8 @@ export const fetchEosioTable = async ({
   }
 
   if (chain === 'wax') {
-    provider = 'https://wax-rpc.wombat.app'
+    //provider = 'https://wax-rpc.wombat.app'
+    provider = 'https://api.waxsweden.org'
   }
 
   let args = {
