@@ -1,7 +1,7 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tsconfigPaths from 'vite-tsconfig-paths'
-import * as path from 'path';
+import * as path from 'path'
 
 // https://vitejs.dev/config/
 export default defineConfig({
@@ -12,8 +12,6 @@ export default defineConfig({
     host: '0.0.0.0'
   },
   resolve: {
-    alias: [
-      { find: '@', replacement: path.resolve(__dirname, 'src') },
-    ],
-  },
+    alias: [{ find: '@', replacement: path.resolve(__dirname, 'src') }]
+  }
 })
