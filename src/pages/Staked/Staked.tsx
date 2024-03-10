@@ -2,6 +2,9 @@ import { useState, useId } from 'react'
 import { useForm, SubmitHandler } from 'react-hook-form'
 import { fetchEosioTable } from '@/libs/eosio.js'
 import '@/index.css'
+import endpoints_json from '@/data/endpoints.json'
+const endpoints: Record<string, Record<string, string>> = endpoints_json
+
 import axios from 'axios'
 
 interface ProgressStateType {
@@ -17,6 +20,8 @@ type ProgressType = UseProgressType[0]
 type SetProgressType = UseProgressType[1]
 
 type Inputs = {
+  wax_api_endpoint: string | undefined,
+  atomicassets_api_endpoint: string | undefined,
   templates: string | undefined
   sources_select: Array<string> | undefined
   accounts_to_exclude: string | undefined
@@ -107,7 +112,7 @@ function getWeightedAccounts(templates: Map<string, Map<string, number>>) {
   return result_text
 }
 
-async function get_nc_waxdao_farms() {
+async function get_nc_waxdao_farms(api_url: string) {
   let offset = 0
   let more = true
   //let rows = [];
@@ -116,6 +121,7 @@ async function get_nc_waxdao_farms() {
   const nc_farms = new Set<string>()
   while (more === true) {
     const data = await fetchEosioTable({
+      api_url: api_url,
       code: 'waxdaofarmer',
       scope: 'waxdaofarmer',
       table: 'farms',
@@ -140,6 +146,7 @@ async function get_nc_waxdao_farms() {
 }
 
 const get_owned = async (
+  api_url: string,
   templates_map: Map<string | undefined, number>,
   accounts_to_exclude: Set<string>,
   templates_count: Map<string, Map<string, number>>,
@@ -179,7 +186,7 @@ const get_owned = async (
 
       while (more === true) {
         const url =
-          'https://wax.api.atomicassets.io/atomicassets/v1/assets?template_id=' +
+          api_url + '/atomicassets/v1/assets?template_id=' +
           template_ids_chunk
             .filter(function (x) {
               return x !== undefined
@@ -249,6 +256,7 @@ const get_owned = async (
 }
 
 const get_transfers_to = async (
+  api_url: string,
   to_account: string,
   accounts_to_exclude: Set<string>,
   templates_map: Map<string | undefined, number>,
@@ -290,7 +298,7 @@ const get_transfers_to = async (
 
       while (more === true) {
         const url =
-          'https://wax.api.atomicassets.io/atomicassets/v1/transfers?recipient=' +
+          api_url + '/atomicassets/v1/transfers?recipient=' +
           to_account +
           '&template_id=' +
           template_ids_chunk
@@ -359,6 +367,7 @@ const get_transfers_to = async (
 }
 
 const get_staked_wombatmaster = async (
+  api_url: string,
   templates_map: Map<string | undefined, number>,
   assets: Map<string, string>,
   accounts: Set<string>,
@@ -385,6 +394,7 @@ const get_staked_wombatmaster = async (
     let more = true
     while (more === true) {
       const data = await fetchEosioTable({
+        api_url: api_url,
         code: 'wombatmaster',
         scope: '' + wax_account,
         table: 'staked',
@@ -423,6 +433,7 @@ const get_staked_wombatmaster = async (
 }
 
 const get_staked_waxdaofarmer = async (
+  api_url: string,
   templates_map: Map<string | undefined, number>,
   assets: Map<string, string>,
   accounts: Set<string>,
@@ -450,6 +461,7 @@ const get_staked_waxdaofarmer = async (
 
     ac_count += 1
     const data = await fetchEosioTable({
+      api_url: api_url,
       code: 'waxdaofarmer',
       scope: 'waxdaofarmer',
       table: 'stakebackup',
@@ -520,6 +532,7 @@ const Staked = () => {
     formState: { errors, isSubmitting }
   } = useForm<Inputs>()
   const onSubmit: SubmitHandler<Inputs> = async (data) => {
+    console.log({"data": data})
     const templates_map = parseTemplatesString(data.templates)
     const templates_count = new Map<string, Map<string, number>>()
 
@@ -532,15 +545,16 @@ const Staked = () => {
       // Staked in Wombat Dungeon Master contract "wombatmaster"
       const { assets: assets_wombatmaster, accounts: accounts_wombatmaster } =
         await get_transfers_to(
+          endpoints.atomic_https[data.atomicassets_api_endpoint ?? ''],
           'wombatmaster',
           accounts_to_exclude,
           templates_map,
           setProgress,
           'Dungeon Master'
-          //setWeightedAccountList
         )
 
       await get_staked_wombatmaster(
+        endpoints.api_https2[data.wax_api_endpoint ?? ''],
         templates_map,
         assets_wombatmaster,
         accounts_wombatmaster,
@@ -560,20 +574,20 @@ const Staked = () => {
       // Staked in WaxDAO contract "waxdaofarmer"
 
       // get non-custodial farms, in later step they need to be excluded
-      const nc_waxdao_farms = await get_nc_waxdao_farms()
+      const nc_waxdao_farms = await get_nc_waxdao_farms(endpoints.api_https2[data.wax_api_endpoint ?? ''])
 
       const { assets: assets_waxdaofarmer, accounts: accounts_waxdaofarmer } =
         await get_transfers_to(
+          endpoints.atomic_https[data.atomicassets_api_endpoint ?? ''],
           'waxdaofarmer',
           accounts_to_exclude,
           templates_map,
           setProgress,
           'WaxDAO'
-          //setProgress
-          //setWeightedAccountList
         )
 
       await get_staked_waxdaofarmer(
+        endpoints.api_https2[data.wax_api_endpoint ?? ''],
         templates_map,
         assets_waxdaofarmer,
         accounts_waxdaofarmer,
@@ -593,6 +607,7 @@ const Staked = () => {
     if (data.sources_select?.includes('account')) {
       // assets in any account, except wombatmaster, waxadao and optional excluded
       await get_owned(
+        endpoints.atomic_https[data.atomicassets_api_endpoint ?? ''],
         templates_map,
         accounts_to_exclude,
         templates_count,
@@ -609,8 +624,9 @@ const Staked = () => {
 
   return (
     <div className="m-4 flex h-screen items-center">
-      <div className="mx-auto space-y-4">
+      <div className="border-2 mx-auto space-y-4">
         <form className="space-y-2" onSubmit={handleSubmit(onSubmit)}>
+
           <div className="w-full space-x-2">
             <label>
               <input
@@ -652,25 +668,7 @@ const Staked = () => {
             </label>
           </div>
 
-          <div>
-            <label
-              htmlFor="accounts_to_exclude"
-              className="block text-sm font-medium leading-6 text-gray-900"
-            >
-              optional accounts to exclude, comma separated:
-            </label>
-            <input
-              {...register('accounts_to_exclude', {
-                validate: validate_accounts_to_exclude
-              })}
-              id="accounts_to_exclude"
-              type="text"
-              className="block w-full rounded-md border-0 py-1.5 text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 placeholder:text-gray-400 focus:ring-2 focus:ring-inset focus:ring-indigo-600 sm:text-sm sm:leading-6"
-            />
-            {errors.accounts_to_exclude && (
-              <div>{errors.accounts_to_exclude.message}</div>
-            )}
-          </div>
+
 
           <div>
             <label
@@ -693,6 +691,70 @@ const Staked = () => {
             {errors.templates && <div>{errors.templates.message}</div>}
           </div>
 
+          <details>
+            <summary>optional settings</summary>
+            <div>
+              <label
+                htmlFor="accounts_to_exclude"
+                className="block text-sm font-medium leading-6 text-gray-900"
+              >
+                accounts to exclude, comma separated:
+              </label>
+              <input
+                {...register('accounts_to_exclude', {
+                  validate: validate_accounts_to_exclude
+                })}
+                id="accounts_to_exclude"
+                type="text"
+                className="block w-full rounded-md border-0 py-1.5 text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 placeholder:text-gray-400 focus:ring-2 focus:ring-inset focus:ring-indigo-600 sm:text-sm sm:leading-6"
+              />
+              {errors.accounts_to_exclude && (
+                <div>{errors.accounts_to_exclude.message}</div>
+              )}
+            </div>
+
+            <div className="flex flex-row space-x-4 mb-2">
+              <div className="basis-1/2 flex items-center justify-start">
+                <label
+                  htmlFor="select_wax_api"
+                  className="text-sm font-medium text-gray-900"
+                >
+                  WAX API endpoint:
+                </label>
+              </div>
+              <div className="basis-1/2">
+                <select {...register("wax_api_endpoint")}
+                  id="select_wax_api"
+                  className="w-full text-sm font-medium bg-transparent border-0 border-b-2 focus:outline-none focus:ring-0 focus:border-0 focus:border-b-2"
+                >
+                  {Object.keys(endpoints.api_https2).map((key) => (
+                    <option key={key} value={key}>{key}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+            <div className="flex flex-row space-x-4">
+              <div className="basis-1/2 inline-block flex items-center justify-start">
+                <label
+                  htmlFor="select_atomicassets_api"
+                  className="text-sm font-medium text-gray-900"
+                >
+                  AtomicAssets API endpoint:
+                </label>
+              </div>
+              <div className="basis-1/2">
+                <select {...register("atomicassets_api_endpoint")}
+                  id="select_atomicassets_api"
+                  className="w-full text-sm font-medium bg-transparent border-0 border-b-2 focus:outline-none focus:ring-0 "
+                >
+                  {Object.keys(endpoints.atomic_https).map((key) => (
+                    <option key={key} value={key}>{key}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          </details>
+
           <button
             disabled={isSubmitting}
             type="submit"
@@ -703,7 +765,7 @@ const Staked = () => {
         </form>
 
         <div
-          className="my-50 pt-30 pb-30 bg-blue-100 border-t border-b border-blue-500 text-blue-700 px-4 py-3"
+          className="my-5 pt-30 pb-30 bg-blue-100 border-t border-b border-blue-500 text-blue-700 px-4 py-3"
           role="alert"
         >
           {isSubmitting ? (
@@ -720,7 +782,7 @@ const Staked = () => {
               htmlFor={resultTextId}
               className="block text-sm font-medium leading-6 text-gray-900"
             >
-              weighted list of owners (
+              results (
               {(weightedAccountList?.split(/\r\n|\r|\n/).length ?? 0) - 1}):
             </label>
             <textarea

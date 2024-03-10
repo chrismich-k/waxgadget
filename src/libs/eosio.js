@@ -1,6 +1,7 @@
 import axios from 'axios'
 
 export const fetchEosioTable = async ({
+  api_url,
   code,
   scope,
   table,
@@ -8,18 +9,8 @@ export const fetchEosioTable = async ({
   from,
   upper = '',
   key_type = '',
-  index_position = 1,
-  chain = 'wax'
+  index_position = 1
 }) => {
-  let provider = undefined
-  if (chain === 'eos') {
-    provider = 'https://mainnet.eosamsterdam.net'
-  }
-
-  if (chain === 'wax') {
-    //provider = 'https://wax-rpc.wombat.app'
-    provider = 'https://api.waxsweden.org'
-  }
 
   let args = {
     code: code,
@@ -41,7 +32,7 @@ export const fetchEosioTable = async ({
     args['index_position'] = index_position
   }
 
-  const response = await axios.post(provider + '/v1/chain/get_table_rows', args)
+  const response = await axios.post(api_url + '/v1/chain/get_table_rows', args)
   const data = response.data
   //console.log({ response: response });
   return data
