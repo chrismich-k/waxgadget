@@ -10,7 +10,16 @@ import axios from 'axios'
 interface ProgressStateType {
   curNum: number
   maxNum: number
+  waxRetries: number
+  waxErrors: number
+  atomicRetries: number
+  atomicErrors: number
   unit: string
+}
+
+interface ReturnStatusType {
+  success: boolean,
+  retries: number
 }
 
 const useProgress = (initial: ProgressStateType) =>
@@ -25,6 +34,10 @@ type Inputs = {
   templates: string | undefined
   sources_select: Array<string> | undefined
   accounts_to_exclude: string | undefined
+}
+
+function sleep(ms: number) {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 function parse_accounts_string(inputstring: string | undefined): Set<string> {
@@ -115,20 +128,32 @@ function getWeightedAccounts(templates: Map<string, Map<string, number>>) {
 async function get_nc_waxdao_farms(api_url: string) {
   let offset = 0
   let more = true
+  let error = false
+  let retries_count = 0
   //let rows = [];
 
   const nc_types = new Set<string>(['nc.v2', 'nc.c.shared'])
   const nc_farms = new Set<string>()
-  while (more === true) {
-    const data = await fetchEosioTable({
-      api_url: api_url,
-      code: 'waxdaofarmer',
-      scope: 'waxdaofarmer',
-      table: 'farms',
-      limit: 100,
-      from: offset,
-      index_position: 1
-    })
+  while (more === true && !error) {
+    let success = false
+    let data = null
+    const max_retries = 5
+    let retries = 0
+    while (retries <= max_retries && !success) {
+      ({ data, success } = await fetchEosioTable({
+        api_url: api_url,
+        code: 'waxdaofarmer',
+        scope: 'waxdaofarmer',
+        table: 'farms',
+        limit: 100,
+        from: offset,
+        index_position: 1,
+        max_retries: 0
+      }))
+      retries += 1
+    }
+    error = !success
+    retries_count += retries
     more = data.more === true
     offset = data.next_key
     //rows = [...rows, ...data.rows];
@@ -142,7 +167,7 @@ async function get_nc_waxdao_farms(api_url: string) {
   }
 
   //console.log(nc_farms);
-  return nc_farms
+  return { data: nc_farms, success: !error, retries: retries_count }
 }
 
 const get_owned = async (
@@ -150,7 +175,8 @@ const get_owned = async (
   templates_map: Map<string | undefined, number>,
   accounts_to_exclude: Set<string>,
   templates_count: Map<string, Map<string, number>>,
-  setProgress: SetProgressType
+  setProgress: SetProgressType,
+  api_delay = 100
   //setResultList: (arg0: string) => void
 ) => {
   // load transfers from atomic
@@ -171,7 +197,8 @@ const get_owned = async (
       console.log('chunk:')
       console.log(template_ids_chunk)
 
-      setProgress(() => ({
+      setProgress((prevState: ProgressType) => ({
+        ...prevState,
         curNum: map_counter + 1,
         maxNum: templates_map.size,
         unit: 'Templates from all accounts'
@@ -196,6 +223,10 @@ const get_owned = async (
           page +
           '&limit=100&order=desc&sort=asset_id'
         const response = await axios.get(url)
+
+        // wait a bit, to not get blocked
+        await sleep(api_delay)
+
         const data = response.data
 
         if (data.data.length > 0) {
@@ -283,7 +314,8 @@ const get_transfers_to = async (
       console.log('chunk:')
       console.log(template_ids_chunk)
 
-      setProgress(() => ({
+      setProgress((prevState: ProgressType) => ({
+        ...prevState,
         curNum: map_counter + 1,
         maxNum: templates_map.size,
         unit: 'Templates for ' + unit_name + ' from atomic API'
@@ -373,63 +405,129 @@ const get_staked_wombatmaster = async (
   accounts: Set<string>,
   templates_count: Map<string, Map<string, number>>,
   setProgress: SetProgressType
-) => {
+): Promise<ReturnStatusType> => {
+  let error = false
+  let retries_count = 0
+  let api_count = 0
+
   setProgress((prevState: ProgressType) => ({
-    curNum: prevState.curNum,
+    ...prevState,
+    curNum: 1,
     maxNum: accounts.size,
-    unit: 'Dungeon Master accounts'
+    unit: 'DM accounts'
   }))
 
   // load staked assets from wax tables
   let ac_count = 1
   for (const wax_account of accounts) {
+    // let api_count = 0
     setProgress((prevState: ProgressType) => ({
-      maxNum: prevState.maxNum,
+      ...prevState,
       curNum: ac_count,
-      unit: 'Dungeon Master accounts'
+      unit: 'DM accounts (' + wax_account + ')'
     }))
 
     ac_count += 1
     let offset = 0
     let more = true
-    while (more === true) {
-      const data = await fetchEosioTable({
-        api_url: api_url,
-        code: 'wombatmaster',
-        scope: '' + wax_account,
-        table: 'staked',
-        limit: 100,
-        from: offset,
-        index_position: 1
-      })
-      more = data.more === true
-      offset = data.next_key
+    let data = null
+    let success = false
+    while (more === true && !error) {
+      let next_offset = 0
+      let processed_assets = 0
+      success = false
+
+      //console.log("more: " + more + "; error: " + error + "; wax_account: " + wax_account + "; offset: " + offset)
+
+      let retries = 0
+      api_count += 1
+      const max_retries = 5
+      while (retries <= max_retries && !success) {
+        //console.log("retries: " + retries);
+        //console.log("wax_account: " + wax_account);
+        //console.log("from: " + offset);
+
+        ({ data, success } = await fetchEosioTable({
+          api_url: api_url,
+          code: 'wombatmaster',
+          scope: '' + wax_account,
+          table: 'staked',
+          limit: 100,
+          from: offset,
+          index_position: 1,
+          max_retries: 0
+        }))
+
+        //console.log("data: " + JSON.stringify(data, null, '\t'));
+
+        if (!success) {
+          setProgress((prevState: ProgressType) => ({
+            ...prevState,
+            waxRetries: prevState.waxRetries + 1,
+            unit: 'DM accounts (' + wax_account + ')'
+          }))
+          console.log("unsuccessful");
+          retries += 1
+          await(sleep(1000))
+        } else {
+          //console.log("success - data: " + JSON.stringify(data, null, '\t'));
+        }
+      }
+      more = data?.more === true
+      error = !success
+      retries_count += retries
+      if (more && success) {
+        next_offset = data?.next_key
+
+        //console.log("new offset: " + offset)
+      }
       //rows = [...rows, ...data.rows];
 
       // save number templates for account
-      for (const asset of data.rows) {
-        const template_id = assets.get(asset.asset_id) ?? ''
-        if (templates_map.has(template_id)) {
-          const increment = templates_map.get(template_id) ?? 0
-          if (!templates_count.has(template_id)) {
-            templates_count.set(template_id, new Map<string, number>())
-          }
-          if (!templates_count.get(template_id)?.has(wax_account)) {
-            templates_count.get(template_id)?.set(wax_account, increment)
-          } else {
-            templates_count
-              .get(template_id)
-              ?.set(
-                wax_account,
-                (templates_count.get(template_id)?.get(wax_account) ?? 0) +
+      try {
+
+        //console.log("try");
+
+        for (const asset of data?.rows) {
+
+          //console.log("asset: " + JSON.stringify(asset, null, '\t'));
+
+          const template_id = assets.get(asset.asset_id) ?? ''
+          if (templates_map.has(template_id)) {
+            const increment = templates_map.get(template_id) ?? 0
+            if (!templates_count.has(template_id)) {
+              templates_count.set(template_id, new Map<string, number>())
+            }
+            if (!templates_count.get(template_id)?.has(wax_account)) {
+              templates_count.get(template_id)?.set(wax_account, increment)
+            } else {
+              templates_count
+                .get(template_id)
+                ?.set(
+                  wax_account,
+                  (templates_count.get(template_id)?.get(wax_account) ?? 0) +
                   increment
-              )
+                )
+            }
           }
+          processed_assets += 1
+        }
+
+        console.log("processed " + processed_assets + " assets for " + wax_account + "; offset: " + offset)
+
+      } catch(err:unknown) {
+        if (err instanceof Error) {
+          console.log("error: " +  err.message);
         }
       }
+
+      data = null;
+      offset = next_offset
+
+      //await(sleep(1000));
     }
   }
-  return { templates_count: templates_count }
+  return { success: !error, retries: retries_count }
 }
 
 const get_staked_waxdaofarmer = async (
@@ -440,27 +538,29 @@ const get_staked_waxdaofarmer = async (
   templates_count: Map<string, Map<string, number>>,
   nc_waxdao_farms: Set<string>,
   setProgress: SetProgressType
-) => {
+): Promise<ReturnStatusType> => {
   setProgress((prevState: ProgressType) => ({
-    curNum: prevState.curNum,
+    ...prevState,
+    curNum: 1,
     maxNum: accounts.size,
     unit: 'WaxDAO accounts'
   }))
+  let error = false
+  let retries_count = 0
 
   // load staked assets from wax tables
   let ac_count = 1
   for (const wax_account of accounts) {
     setProgress((prevState: ProgressType) => ({
-      maxNum: prevState.maxNum,
+      ...prevState,
       curNum: ac_count,
-      unit: 'WaxDAO accounts'
     }))
 
-    //console.log("wax_account:");
+    //console.log("wax_account: " + wax_account);
     //console.log(wax_account);
 
     ac_count += 1
-    const data = await fetchEosioTable({
+    const { data, success, retries } = await fetchEosioTable({
       api_url: api_url,
       code: 'waxdaofarmer',
       scope: 'waxdaofarmer',
@@ -471,6 +571,10 @@ const get_staked_waxdaofarmer = async (
       index_position: 2,
       key_type: 'name'
     })
+
+    error = !success
+    retries_count += retries
+
     // save number of templates for account
     for (const farm of data.rows) {
       if (!nc_waxdao_farms.has(farm.farmname)) {
@@ -498,13 +602,17 @@ const get_staked_waxdaofarmer = async (
       }
     }
   }
-  return { templates_count: templates_count }
+  return { success: !error, retries: retries_count }
 }
 
 const Staked = () => {
   const [progress, setProgress] = useProgress({
     curNum: 0,
     maxNum: 0,
+    waxRetries: 0,
+    waxErrors: 0,
+    atomicRetries: 0,
+    atomicErrors: 0,
     unit: ''
   })
   const [weightedAccountList, setWeightedAccountList] = useState('')
@@ -530,18 +638,33 @@ const Staked = () => {
     register,
     handleSubmit,
     formState: { errors, isSubmitting }
-  } = useForm<Inputs>()
+  } = useForm<Inputs>({defaultValues: { "wax_api_endpoint": "EOSAmsterdam", "atomicassets_api_endpoint": "NeftyGuild"
+}})
   const onSubmit: SubmitHandler<Inputs> = async (data) => {
     console.log({"data": data})
     const templates_map = parseTemplatesString(data.templates)
     const templates_count = new Map<string, Map<string, number>>()
+    let wax_error = false
+    let aa_error = false
+    let wax_retries = 0
+    //let aa_retries = 0
+
+    setProgress({
+      curNum: 0,
+      maxNum: 0,
+      waxRetries: 0,
+      waxErrors: 0,
+      atomicRetries: 0,
+      atomicErrors: 0,
+      unit: ''
+    })
 
     // add waxdao and wombatmaster to excluded account names
     const accounts_to_exclude = parse_accounts_string(data.accounts_to_exclude)
     accounts_to_exclude.add('wombatmaster')
     accounts_to_exclude.add('waxdaofarmer')
 
-    if (data.sources_select?.includes('wombatmaster')) {
+    if (data.sources_select?.includes('wombatmaster') && !wax_error && !aa_error) {
       // Staked in Wombat Dungeon Master contract "wombatmaster"
       const { assets: assets_wombatmaster, accounts: accounts_wombatmaster } =
         await get_transfers_to(
@@ -553,7 +676,7 @@ const Staked = () => {
           'Dungeon Master'
         )
 
-      await get_staked_wombatmaster(
+        const { success, retries } = await get_staked_wombatmaster(
         endpoints.api_https2[data.wax_api_endpoint ?? ''],
         templates_map,
         assets_wombatmaster,
@@ -561,6 +684,8 @@ const Staked = () => {
         templates_count,
         setProgress
       )
+      wax_error = wax_error || !success
+      wax_retries += retries
 
       /*console.log('assets_wombatmaster:');
       console.log(assets_wombatmaster);
@@ -570,11 +695,13 @@ const Staked = () => {
       console.log(templates_count_wombatmaster);*/
     }
 
-    if (data.sources_select?.includes('waxdaofarmer')) {
+    if (data.sources_select?.includes('waxdaofarmer') && !wax_error && !aa_error) {
       // Staked in WaxDAO contract "waxdaofarmer"
 
       // get non-custodial farms, in later step they need to be excluded
-      const nc_waxdao_farms = await get_nc_waxdao_farms(endpoints.api_https2[data.wax_api_endpoint ?? ''])
+      const { data: nc_waxdao_farms, success: nc_success, retries: nc_retries } = await get_nc_waxdao_farms(endpoints.api_https2[data.wax_api_endpoint ?? ''])
+      wax_error = wax_error || !nc_success
+      wax_retries += nc_retries
 
       const { assets: assets_waxdaofarmer, accounts: accounts_waxdaofarmer } =
         await get_transfers_to(
@@ -586,7 +713,7 @@ const Staked = () => {
           'WaxDAO'
         )
 
-      await get_staked_waxdaofarmer(
+      const { success, retries } = await get_staked_waxdaofarmer(
         endpoints.api_https2[data.wax_api_endpoint ?? ''],
         templates_map,
         assets_waxdaofarmer,
@@ -595,6 +722,8 @@ const Staked = () => {
         nc_waxdao_farms,
         setProgress
       )
+      wax_error = wax_error || !success
+      wax_retries += retries
 
       /* console.log('assets_waxdaofarmer:');
       console.log(assets_waxdaofarmer);
@@ -604,7 +733,7 @@ const Staked = () => {
       console.log(templates_count_waxdaofarmer); */
     }
 
-    if (data.sources_select?.includes('account')) {
+    if (data.sources_select?.includes('account') && !wax_error && !aa_error) {
       // assets in any account, except wombatmaster, waxadao and optional excluded
       await get_owned(
         endpoints.atomic_https[data.atomicassets_api_endpoint ?? ''],
@@ -622,9 +751,25 @@ const Staked = () => {
     //console.log(weighted_account_list)
   }
 
+  let wax_error = ''
+  if (progress.waxRetries > 0) {
+    wax_error = 'WAX API: ' + progress.waxRetries.toString() + 'x Retries'
+  }
+  if (progress.waxErrors > 0) {
+    wax_error = 'WAX API: ERROR!'
+  }
+
+  let aa_error = ''
+  if (progress.atomicRetries > 0) {
+    aa_error = 'AtomicAssets API: ' + progress.atomicRetries.toString() + 'x Retries'
+  }
+  if (progress.atomicErrors > 0) {
+    aa_error = 'AtomicAssets API: ERROR!'
+  }
+
   return (
     <div className="m-4 flex h-screen items-center">
-      <div className="border-2 mx-auto space-y-4">
+      <div className="mx-auto space-y-4">
         <form className="space-y-2" onSubmit={handleSubmit(onSubmit)}>
 
           <div className="w-full space-x-2">
@@ -770,7 +915,7 @@ const Staked = () => {
         >
           {isSubmitting ? (
             <p className="text-sm">
-              Processing {progress.curNum} of {progress.maxNum} {progress.unit}
+              Processing {progress.curNum} of {progress.maxNum} {progress.unit} Wax retries: {progress.waxRetries}
             </p>
           ) : (
             <p className="text-sm">&nbsp;</p>
@@ -783,7 +928,7 @@ const Staked = () => {
               className="block text-sm font-medium leading-6 text-gray-900"
             >
               results (
-              {(weightedAccountList?.split(/\r\n|\r|\n/).length ?? 0) - 1}):
+              {(weightedAccountList?.split(/\r\n|\r|\n/).length ?? 0) - 1}) {wax_error} {aa_error}:
             </label>
             <textarea
               id={resultTextId}
