@@ -1,4 +1,4 @@
-import Staked from '@/pages/Staked/Staked.tsx'
+import Staked from '@/pages/Staked/Staked.tsx';
 
 function App() {
   return (
@@ -7,7 +7,7 @@ function App() {
         <Staked />
       </div>
     </>
-  )
+  );
 }
 
-export default App
+export default App;
