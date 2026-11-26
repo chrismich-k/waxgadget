@@ -340,7 +340,7 @@ const get_transfers_to = async (
           page += 1;
           for (const transfer of data.data) {
             // save account
-            if (!accounts.has(transfer.sender_name || accounts_to_exclude.has(transfer.sender_name))) {
+            if (!accounts.has(transfer.sender_name) && !accounts_to_exclude.has(transfer.sender_name)) {
               accounts.add(transfer.sender_name);
               insert_account_count += 1;
             }
