@@ -147,10 +147,16 @@ async function get_nc_waxdao_farms(api_url: string) {
         index_position: 1,
         max_retries: 0,
       }));
-      retries += 1;
+      if (!success) {
+        retries += 1;
+      }
     }
-    error = !success;
     retries_count += retries;
+    if (!success || !data) {
+      // give up: without the full farm list non-custodial farms can't be excluded reliably
+      error = true;
+      break;
+    }
     more = data.more === true;
     offset = data.next_key;
     //rows = [...rows, ...data.rows];
@@ -519,6 +525,7 @@ const get_staked_waxdaofarmer = async (
     maxNum: accounts.size,
     unit: 'WaxDAO accounts',
   }));
+  const stakebackup_limit = 1000;
   let error = false;
   let retries_count = 0;
 
@@ -539,18 +546,48 @@ const get_staked_waxdaofarmer = async (
       code: 'waxdaofarmer',
       scope: 'waxdaofarmer',
       table: 'stakebackup',
-      limit: 100,
+      // all rows of one account share the same secondary key, so paging via
+      // next_key is not reliable - fetch everything at once instead
+      limit: stakebackup_limit,
       from: '' + wax_account,
       upper: '' + wax_account,
       index_position: 2,
       key_type: 'name',
     });
 
-    error = !success;
     retries_count += retries;
+    if (retries > 0) {
+      setProgress((prevState: ProgressType) => ({
+        ...prevState,
+        waxRetries: prevState.waxRetries + retries,
+      }));
+    }
+
+    if (!success || !data) {
+      console.log('waxdaofarmer: failed to load stakebackup rows for ' + wax_account);
+      error = true;
+      setProgress((prevState: ProgressType) => ({
+        ...prevState,
+        waxErrors: prevState.waxErrors + 1,
+      }));
+      break;
+    }
+
+    if (data.more === true) {
+      // result would be truncated - don't silently count only part of the stakes
+      console.log(
+        'waxdaofarmer: more than ' + stakebackup_limit + ' stakebackup rows for ' + wax_account + ', aborting'
+      );
+      error = true;
+      setProgress((prevState: ProgressType) => ({
+        ...prevState,
+        waxErrors: prevState.waxErrors + 1,
+      }));
+      break;
+    }
 
     // save number of templates for account
-    for (const farm of data.rows) {
+    for (const farm of data.rows ?? []) {
       if (!nc_waxdao_farms.has(farm.farmname)) {
         // skip non-custodial farms
         for (const asset_id of farm.assets) {
@@ -674,27 +711,35 @@ const Staked = () => {
       } = await get_nc_waxdao_farms(endpoints.api_https2[data.wax_api_endpoint ?? '']);
       wax_error = wax_error || !nc_success;
       wax_retries += nc_retries;
+      setProgress((prevState: ProgressType) => ({
+        ...prevState,
+        waxRetries: prevState.waxRetries + nc_retries,
+        waxErrors: prevState.waxErrors + (nc_success ? 0 : 1),
+      }));
 
-      const { assets: assets_waxdaofarmer, accounts: accounts_waxdaofarmer } = await get_transfers_to(
-        endpoints.atomic_https[data.atomicassets_api_endpoint ?? ''],
-        'waxdaofarmer',
-        accounts_to_exclude,
-        templates_map,
-        setProgress,
-        'WaxDAO'
-      );
+      // without the complete farm list, non-custodial farms can't be excluded - skip
+      if (nc_success) {
+        const { assets: assets_waxdaofarmer, accounts: accounts_waxdaofarmer } = await get_transfers_to(
+          endpoints.atomic_https[data.atomicassets_api_endpoint ?? ''],
+          'waxdaofarmer',
+          accounts_to_exclude,
+          templates_map,
+          setProgress,
+          'WaxDAO'
+        );
 
-      const { success, retries } = await get_staked_waxdaofarmer(
-        endpoints.api_https2[data.wax_api_endpoint ?? ''],
-        templates_map,
-        assets_waxdaofarmer,
-        accounts_waxdaofarmer,
-        templates_count,
-        nc_waxdao_farms,
-        setProgress
-      );
-      wax_error = wax_error || !success;
-      wax_retries += retries;
+        const { success, retries } = await get_staked_waxdaofarmer(
+          endpoints.api_https2[data.wax_api_endpoint ?? ''],
+          templates_map,
+          assets_waxdaofarmer,
+          accounts_waxdaofarmer,
+          templates_count,
+          nc_waxdao_farms,
+          setProgress
+        );
+        wax_error = wax_error || !success;
+        wax_retries += retries;
+      }
 
       /* console.log('assets_waxdaofarmer:');
       console.log(assets_waxdaofarmer);
